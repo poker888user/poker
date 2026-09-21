@@ -1,13 +1,11 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
 const path = require('path');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ========== 牌型逻辑（和之前一样） ==========
 const SUITS = ['♠','♥','♦','♣'];
 const RANKS = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
 const RV = {'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14};
@@ -65,9 +63,9 @@ class Room{
     this.acted=new Set();this.handOver=false;this.showdownResult=null;
   }
   addPlayer(id,name){
-    if(this.players.length>=6)return false;
+    if(this.players.length>=8)return false;
     if(this.players.find(p=>p.id===id))return true;
-    this.players.push({id,name,chips:1000,cards:[],bet:0,folded:false,allIn:false,socketId:null});
+    this.players.push({id,name,chips:1000,cards:[],bet:0,folded:false,allIn:false});
     return true;
   }
   startHand(){
@@ -181,58 +179,52 @@ class Room{
   }
 }
 
+// ========== HTTP 接口（替代 WebSocket） ==========
 const rooms={};
 const users={};
 
-io.on('connection',socket=>{
-  let myName=null,myRoom=null;
-  console.log('连接',socket.id);
+app.post('/api/login',(req,res)=>{
+  const {name,password}=req.body;
+  if(!name)return res.json({error:'请输入昵称'});
+  if(!users[name])users[name]={password,chips:1000};
+  else if(users[name].password!==password)return res.json({error:'密码错误'});
+  res.json({ok:true,chips:users[name].chips});
+});
 
-  socket.on('login',({name,password},cb)=>{
-    if(!name)return cb({error:'请输入昵称'});
-    if(!users[name])users[name]={password,chips:1000};
-    else if(users[name].password!==password)return cb({error:'密码错误'});
-    myName=name;
-    cb({ok:true,chips:users[name].chips});
-  });
+app.post('/api/join',(req,res)=>{
+  const {name,roomId}=req.body;
+  if(!name)return res.json({error:'请先登录'});
+  if(!rooms[roomId])rooms[roomId]=new Room(roomId);
+  const r=rooms[roomId];
+  r.addPlayer(name,name);
+  const p=r.players.find(x=>x.id===name);
+  p.chips=users[name]?.chips??1000;
+  res.json({ok:true});
+});
 
-  socket.on('joinRoom',({roomId},cb)=>{
-    if(!myName)return cb({error:'请先登录'});
-    if(!rooms[roomId])rooms[roomId]=new Room(roomId);
-    const r=rooms[roomId];
-    r.addPlayer(myName,myName);
-    const p=r.players.find(x=>x.id===myName);
-    p.socketId=socket.id;
-    p.chips=users[myName].chips;
-    myRoom=r;
-    socket.join(roomId);
-    broadcast(r);
-    cb({ok:true});
-  });
+app.get('/api/state',(req,res)=>{
+  const {name,roomId}=req.query;
+  if(!rooms[roomId]||!name)return res.json({error:'房间不存在'});
+  res.json(rooms[roomId].getStateFor(name));
+});
 
-  socket.on('startHand',()=>{
-    if(!myRoom)return;
-    const res=myRoom.startHand();
-    if(res.error)return socket.emit('error',res.error);
-    broadcast(myRoom);
-  });
+app.post('/api/start',(req,res)=>{
+  const {roomId}=req.body;
+  if(!rooms[roomId])return res.json({error:'房间不存在'});
+  const r=rooms[roomId].startHand();
+  if(r.error)return res.json({error:r.error});
+  res.json({ok:true});
+});
 
-  socket.on('action',({action,amount})=>{
-    if(!myRoom||!myName)return;
-    const res=myRoom.act(myName,action,amount);
-    if(res.error)return socket.emit('error',res.error);
-    for(const p of myRoom.players)if(users[p.id])users[p.id].chips=p.chips;
-    broadcast(myRoom);
-    if(res.showdown)io.to(myRoom.id).emit('showdown',res.showdown);
-  });
-
-  socket.on('disconnect',()=>{console.log('断开',socket.id);});
-
-  function broadcast(room){
-    for(const p of room.players)
-      if(p.socketId)io.to(p.socketId).emit('state',room.getStateFor(p.id));
-  }
+app.post('/api/action',(req,res)=>{
+  const {name,roomId,action,amount}=req.body;
+  if(!rooms[roomId]||!name)return res.json({error:'房间不存在'});
+  const r=rooms[roomId].act(name,action,amount);
+  if(r.error)return res.json({error:r.error});
+  for(const p of rooms[roomId].players)
+    if(users[p.id])users[p.id].chips=p.chips;
+  res.json({ok:true,showdown:r.showdown});
 });
 
 const PORT=process.env.PORT||3000;
-server.listen(PORT,()=>console.log('运行在 '+PORT));
+app.listen(PORT,()=>console.log('运行在 '+PORT));
