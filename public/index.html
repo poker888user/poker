@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>好友德州</title>
+<style>
+*{box-sizing:border-box;}
+body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:#0a5c2e;color:#fff;min-height:100vh;}
+.login-box{max-width:320px;margin:12vh auto;padding:24px;background:rgba(0,0,0,.35);border-radius:12px;text-align:center;}
+.login-box h1{margin:0 0 16px;font-size:22px;}
+.login-box input,.login-box button{width:100%;padding:12px;margin:6px 0;border-radius:8px;border:none;font-size:16px;}
+.login-box button{background:#f0a500;font-weight:bold;cursor:pointer;}
+.wrap{max-width:760px;margin:auto;padding:12px;}
+.info{display:flex;gap:12px;justify-content:center;margin-bottom:8px;font-size:13px;flex-wrap:wrap;}
+.community{display:flex;gap:6px;justify-content:center;min-height:56px;margin:12px 0;align-items:center;}
+.card{display:inline-flex;align-items:center;justify-content:center;width:42px;height:58px;background:#fff;color:#222;border-radius:6px;font-weight:bold;font-size:17px;}
+.card.red{color:#c00;}
+.card.back{background:#2a4d8f;color:#fff;}
+.hint{opacity:.5;font-size:13px;}
+.players{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
+.player{background:rgba(0,0,0,.3);border-radius:10px;padding:8px;border:2px solid transparent;}
+.player.me{border-color:#f0a500;}
+.player.turn{border-color:#4caf50;box-shadow:0 0 10px #4caf50;}
+.player.folded{opacity:.4;}
+.pname{font-weight:bold;margin-bottom:4px;font-size:14px;}
+.pcards{display:flex;gap:4px;margin:4px 0;}
+.pcards .card{width:30px;height:42px;font-size:13px;}
+.pinfo{font-size:12px;opacity:.85;}
+.actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:16px;}
+.actions button{padding:10px 16px;border:none;border-radius:8px;background:#f0a500;font-weight:bold;font-size:14px;cursor:pointer;}
+.actions button.primary{background:#4caf50;}
+.actions button:disabled{opacity:.35;}
+#msg{text-align:center;margin-top:10px;min-height:20px;font-size:14px;}
+</style>
+</head>
+<body>
+<div id="login" class="login-box">
+  <h1>♠ 好友德州 ♥</h1>
+  <input id="name" placeholder="昵称">
+  <input id="password" type="password" placeholder="密码（随便设，用于识别）">
+  <input id="roomId" placeholder="房间号" value="poker888">
+  <button onclick="doLogin()">进入牌桌</button>
+  <p id="loginMsg" style="color:#ffb;"></p>
+</div>
+
+<div id="table" class="wrap" style="display:none;">
+  <div class="info">
+    <span>房间: <b id="roomId">-</b></span>
+    <span>底池: <b id="pot">0</b></span>
+    <span>阶段: <b id="stage">-</b></span>
+  </div>
+  <div class="community" id="community"></div>
+  <div class="players" id="players"></div>
+  <div class="actions">
+    <button onclick="act('fold')">弃牌</button>
+    <button onclick="act('check')">过牌</button>
+    <button onclick="act('call')">跟注</button>
+    <button onclick="act('raise',promptRaise())">加注</button>
+    <button onclick="act('allin')">全下</button>
+    <button class="primary" onclick="startHand()">开始新一局</button>
+  </div>
+  <p id="msg"></p>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket=io();
+let myName=null;
+
+function doLogin(){
+  const name=document.getElementById('name').value.trim();
+  const password=document.getElementById('password').value||'x';
+  const roomId=document.getElementById('roomId').value.trim()||'poker888';
+  if(!name)return document.getElementById('loginMsg').textContent='请输入昵称';
+  socket.emit('login',{name,password},res=>{
+    if(res.error)return document.getElementById('loginMsg').textContent=res.error;
+    myName=name;
+    socket.emit('joinRoom',{roomId},r=>{
+      if(r.error)return document.getElementById('loginMsg').textContent=r.error;
+      document.getElementById('login').style.display='none';
+      document.getElementById('table').style.display='block';
+      document.getElementById('roomId').textContent=roomId;
+    });
+  });
+}
+
+function cardHtml(c){
+  if(c.hidden)return '<span class="card back">?</span>';
+  const red=c.suit==='♥'||c.suit==='♦';
+  return `<span class="card ${red?'red':''}">${c.rank}${c.suit}</span>`;
+}
+
+socket.on('state',s=>{
+  document.getElementById('pot').textContent=s.pot;
+  document.getElementById('stage').textContent=s.stage;
+  document.getElementById('community').innerHTML=s.community.map(cardHtml).join('')||'<span class="hint">等待发牌</span>';
+  document.getElementById('players').innerHTML=s.players.map((p,i)=>{
+    const isMe=p.name===myName;
+    const isTurn=i===s.currentIndex&&!s.handOver;
+    return `<div class="player ${isMe?'me':''} ${isTurn?'turn':''} ${p.folded?'folded':''}">
+      <div class="pname">${p.name}${p.folded?' (弃牌)':''}${p.allIn?' (全下)':''}</div>
+      <div class="pcards">${p.cards.map(cardHtml).join('')}</div>
+      <div class="pinfo">筹码 ${p.chips} · 本注 ${p.bet}</div>
+    </div>`;
+  }).join('');
+  const myTurn=s.players[s.currentIndex]?.name===myName&&!s.handOver;
+  document.querySelectorAll('.actions button').forEach(b=>{
+    if(b.textContent.includes('开始'))return;
+    b.disabled=!myTurn;
+  });
+});
+
+socket.on('showdown',r=>{
+  document.getElementById('msg').textContent='🏆 '+r.winners.map(w=>w.name).join(', ')+' 赢得底池 '+r.pot;
+});
+
+socket.on('error',m=>{
+  document.getElementById('msg').textContent='⚠ '+m;
+});
+
+function act(a,amt){socket.emit('action',{action:a,amount:amt});}
+function startHand(){socket.emit('startHand');}
+function promptRaise(){const v=prompt('加注到多少？','20');return v?parseInt(v):0;}
+</script>
+</body>
+</html>
