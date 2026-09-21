@@ -38,7 +38,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:#0a5
 <div id="login" class="login-box">
   <h1>♠ 好友德州 ♥</h1>
   <input id="name" placeholder="昵称">
-  <input id="password" type="password" placeholder="密码（随便设，用于识别）">
+  <input id="password" type="password" placeholder="密码（随便设）">
   <input id="roomId" placeholder="房间号" value="poker888">
   <button onclick="doLogin()">进入牌桌</button>
   <p id="loginMsg" style="color:#ffb;"></p>
@@ -46,7 +46,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:#0a5
 
 <div id="table" class="wrap" style="display:none;">
   <div class="info">
-    <span>房间: <b id="roomId">-</b></span>
+    <span>房间: <b id="roomIdLabel">-</b></span>
     <span>底池: <b id="pot">0</b></span>
     <span>阶段: <b id="stage">-</b></span>
   </div>
@@ -63,26 +63,28 @@ body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:#0a5
   <p id="msg"></p>
 </div>
 
-<script src="/socket.io/socket.io.js"></script>
 <script>
-const socket=io();
-let myName=null;
+let myName=null, myRoom=null, timer=null;
 
-function doLogin(){
+async function post(url,data){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  return r.json();
+}
+
+async function doLogin(){
   const name=document.getElementById('name').value.trim();
   const password=document.getElementById('password').value||'x';
   const roomId=document.getElementById('roomId').value.trim()||'poker888';
   if(!name)return document.getElementById('loginMsg').textContent='请输入昵称';
-  socket.emit('login',{name,password},res=>{
-    if(res.error)return document.getElementById('loginMsg').textContent=res.error;
-    myName=name;
-    socket.emit('joinRoom',{roomId},r=>{
-      if(r.error)return document.getElementById('loginMsg').textContent=r.error;
-      document.getElementById('login').style.display='none';
-      document.getElementById('table').style.display='block';
-      document.getElementById('roomId').textContent=roomId;
-    });
-  });
+  const res=await post('/api/login',{name,password});
+  if(res.error)return document.getElementById('loginMsg').textContent=res.error;
+  myName=name;myRoom=roomId;
+  await post('/api/join',{name,roomId});
+  document.getElementById('login').style.display='none';
+  document.getElementById('table').style.display='block';
+  document.getElementById('roomIdLabel').textContent=roomId;
+  pollState();
+  timer=setInterval(pollState,1500);
 }
 
 function cardHtml(c){
@@ -91,7 +93,17 @@ function cardHtml(c){
   return `<span class="card ${red?'red':''}">${c.rank}${c.suit}</span>`;
 }
 
-socket.on('state',s=>{
+async function pollState(){
+  if(!myName||!myRoom)return;
+  try{
+    const r=await fetch(`/api/state?name=${encodeURIComponent(myName)}&roomId=${encodeURIComponent(myRoom)}`);
+    const s=await r.json();
+    if(s.error)return;
+    render(s);
+  }catch(e){}
+}
+
+function render(s){
   document.getElementById('pot').textContent=s.pot;
   document.getElementById('stage').textContent=s.stage;
   document.getElementById('community').innerHTML=s.community.map(cardHtml).join('')||'<span class="hint">等待发牌</span>';
@@ -109,18 +121,23 @@ socket.on('state',s=>{
     if(b.textContent.includes('开始'))return;
     b.disabled=!myTurn;
   });
-});
+  if(s.showdownResult){
+    document.getElementById('msg').textContent='🏆 '+s.showdownResult.winners.map(w=>w.name).join(', ')+' 赢得底池 '+s.showdownResult.pot;
+  }
+}
 
-socket.on('showdown',r=>{
-  document.getElementById('msg').textContent='🏆 '+r.winners.map(w=>w.name).join(', ')+' 赢得底池 '+r.pot;
-});
+async function act(a,amt){
+  const r=await post('/api/action',{name:myName,roomId:myRoom,action:a,amount:amt});
+  if(r.error)document.getElementById('msg').textContent='⚠ '+r.error;
+  pollState();
+}
 
-socket.on('error',m=>{
-  document.getElementById('msg').textContent='⚠ '+m;
-});
+async function startHand(){
+  const r=await post('/api/start',{roomId:myRoom});
+  if(r.error)document.getElementById('msg').textContent='⚠ '+r.error;
+  pollState();
+}
 
-function act(a,amt){socket.emit('action',{action:a,amount:amt});}
-function startHand(){socket.emit('startHand');}
 function promptRaise(){const v=prompt('加注到多少？','20');return v?parseInt(v):0;}
 </script>
 </body>
